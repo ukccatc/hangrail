@@ -32,3 +32,16 @@
 
 /* PeggedView */
 "Copied" = "Copiado";
+
+/* Archive */
+"Pin" = "Fijar";
+"Unpin" = "Soltar";
+"Share" = "Compartir";
+"Archive" = "Archivo";
+"Search screenshots" = "Buscar capturas";
+"Nothing in the archive" = "No hay nada en el archivo";
+"No matches" = "Sin resultados";
+"On the line" = "En la línea";
+"Restore to line" = "Volver a la línea";
+"Delete archive older than 7 days" = "Borrar el archivo de más de 7 días";
+"Hang clipboard" = "Colgar el portapapeles";

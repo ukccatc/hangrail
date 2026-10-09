@@ -34,3 +34,16 @@
 
 /* PeggedView */
 "Copied" = "Copied";
+
+/* Archive */
+"Pin" = "Pin";
+"Unpin" = "Unpin";
+"Share" = "Share";
+"Archive" = "Archive";
+"Search screenshots" = "Search screenshots";
+"Nothing in the archive" = "Nothing in the archive";
+"No matches" = "No matches";
+"On the line" = "On the line";
+"Restore to line" = "Restore to line";
+"Delete archive older than 7 days" = "Delete archive older than 7 days";
+"Hang clipboard" = "Hang clipboard";

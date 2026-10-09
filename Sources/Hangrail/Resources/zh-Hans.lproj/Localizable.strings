@@ -32,3 +32,16 @@
 
 /* PeggedView */
 "Copied" = "已复制";
+
+/* Archive */
+"Pin" = "固定";
+"Unpin" = "取消固定";
+"Share" = "共享";
+"Archive" = "归档";
+"Search screenshots" = "搜索截图";
+"Nothing in the archive" = "归档是空的";
+"No matches" = "没有匹配";
+"On the line" = "在晾衣绳上";
+"Restore to line" = "挂回晾衣绳";
+"Delete archive older than 7 days" = "删除超过 7 天的归档";
+"Hang clipboard" = "挂上剪贴板";

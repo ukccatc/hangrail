@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
     private var mouseTimer: Timer?
+    private var shelfPanel: NSPanel?
 
     /// Whether the panel is ordered in. It can be in and still tucked away
     /// above the top edge, like an auto-hiding Dock.
@@ -245,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let x = Layout.x(place: item.place, width: width)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
-        let size = PeggedView.cardSize(for: item.thumb.size)
+        let size = PeggedView.cardSize(for: item)
         return CGRect(x: panel.frame.minX + x - size.width / 2,
                       y: panel.frame.maxY - cardTop - size.height,
                       width: size.width, height: size.height)
@@ -384,6 +385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tick() {
+        if let url = ClipboardWatch.shared.poll() {
+            line.hang(url)
+        }
         let mouse = NSEvent.mouseLocation
         let now = Date()
         // A missed mouse-up used to leave these set, and the rail then
@@ -521,6 +525,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clearItem.isEnabled = line.liveCount > 0
         menu.addItem(clearItem)
 
+        menu.addItem(ClosureMenuItem(L("Archive")) { [weak self] in
+            self?.showArchive()
+        })
+
         let inbox = ClosureMenuItem(L("Handle screenshots")) { [weak self] in
             self?.setInbox(!Inbox.isEnabled)
         }
@@ -542,6 +550,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sound.state = line.soundOn ? .on : .off
         menu.addItem(sound)
 
+        let clipboard = ClosureMenuItem(L("Hang clipboard")) {
+            ClipboardWatch.isEnabled.toggle()
+        }
+        clipboard.state = ClipboardWatch.isEnabled ? .on : .off
+        menu.addItem(clipboard)
+
+        let cleanup = ClosureMenuItem(L("Delete archive older than 7 days")) {
+            Archive.autoCleanup.toggle()
+            if Archive.autoCleanup { Archive.shared.sweep() }
+        }
+        cleanup.state = Archive.autoCleanup ? .on : .off
+        menu.addItem(cleanup)
+
         let login = ClosureMenuItem(L("Open at login")) {
             AppDelegate.toggleLaunchAtLogin()
         }
@@ -552,6 +573,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ClosureMenuItem(L("Quit Hangrail"), key: "q") {
             NSApp.terminate(nil)
         })
+    }
+
+    private func showArchive() {
+        if shelfPanel == nil {
+            let host = NSHostingView(rootView: ArchiveShelf(archive: .shared, line: line))
+            host.sizingOptions = []
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false)
+            panel.title = L("Archive")
+            panel.contentView = host
+            panel.isReleasedWhenClosed = false
+            shelfPanel = panel
+        }
+        shelfPanel?.center()
+        shelfPanel?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private static func toggleLaunchAtLogin() {

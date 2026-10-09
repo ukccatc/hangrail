@@ -50,6 +50,8 @@ struct GrabArea: NSViewRepresentable {
             menu.addItem(ClosureMenuItem(L("Open")) { line.open(id) })
             menu.addItem(ClosureMenuItem(L("Markup")) { line.markup(id) })
             menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
+            menu.addItem(ClosureMenuItem(item.pinned ? L("Unpin") : L("Pin")) { line.togglePin(id) })
+            menu.addItem(ClosureMenuItem(L("Share")) { line.share(id, from: view) })
             let inInbox = line.isInInbox(id)
             if inInbox {
                 menu.addItem(ClosureMenuItem(L("Save to Desktop")) { line.saveToDesktop(id) })

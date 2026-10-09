@@ -49,25 +49,20 @@ struct PeggedView: View {
         return CGSize(width: p.width + Frame.inset * 2, height: p.height + Frame.inset * 2)
     }
 
+    static func cardSize(for item: Pegged) -> CGSize {
+        if item.note != nil {
+            return CGSize(width: NoteSlip.width, height: NoteSlip.height)
+        }
+        return cardSize(for: item.thumb.size)
+    }
+
     /// Distance from the top of the hanging view (the clip) to the card.
     static let cardOffsetBelowTop: CGFloat = 26 - 12
 
     private var photoSize: CGSize { Self.photoSize(for: item.thumb.size) }
 
     private var card: some View {
-        Image(nsImage: item.thumb)
-            .resizable()
-            .interpolation(.high)
-            .frame(width: photoSize.width, height: photoSize.height)
-            // Concentric corners: the photo's radius is the frame's minus the
-            // inset, the way macOS rounds nested shapes.
-            .clipShape(RoundedRectangle(cornerRadius: Frame.radius - Frame.inset, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Frame.radius - Frame.inset, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-            )
-            .padding(Frame.inset)
-            .glassFrame(cornerRadius: Frame.radius)
+        framed
             .shadow(color: .black.opacity(reordering ? 0.40 : (hovering ? 0.28 : 0.28)),
                     radius: reordering ? 18 : (hovering ? 12 : 8),
                     y: reordering ? 12 : (hovering ? 7 : 6))
@@ -87,6 +82,15 @@ struct PeggedView: View {
                     .opacity(hovering && !dragging ? 1 : 0)
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
+            }
+            .overlay(alignment: .topTrailing) {
+                if item.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(HangTheme.amber)
+                        .padding(6)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay(GrabArea(item: item, line: line))
             .overlay(alignment: .bottom) {
@@ -110,6 +114,36 @@ struct PeggedView: View {
                                            value: item.falling ? [:] : [item.id: g.frame(in: .global)])
                 }
             )
+    }
+
+    /// Notes skip the photo glass. The material blur washes the paper out
+    /// and the slip stops reading as a note.
+    @ViewBuilder
+    private var framed: some View {
+        if item.note != nil {
+            face
+        } else {
+            face
+                .padding(Frame.inset)
+                .glassFrame(cornerRadius: Frame.radius)
+        }
+    }
+
+    @ViewBuilder
+    private var face: some View {
+        if let note = item.note {
+            NoteSlip(text: note)
+        } else {
+            Image(nsImage: item.thumb)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: photoSize.width, height: photoSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: Frame.radius - Frame.inset, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Frame.radius - Frame.inset, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+                )
+        }
     }
 
     private func arrive() {
@@ -139,6 +173,77 @@ struct PeggedView: View {
         withAnimation(.easeOut(duration: 0.3)) { swing = degrees }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             withAnimation(.interpolatingSpring(stiffness: 38, damping: 2.4)) { swing = 0 }
+        }
+    }
+}
+
+/// A paper slip on the rail. Text is real type, so a short note stays large
+/// and a long one shrinks instead of being a scaled-down picture of text.
+struct NoteSlip: View {
+    let text: String
+    var compact = false
+
+    static let width: CGFloat = 132
+    static let height: CGFloat = 108
+
+    private var pointSize: CGFloat {
+        let count = text.count
+        let oneLine = !text.contains("\n")
+        let size: CGFloat
+        if oneLine && count <= 22 { size = 22 }
+        else if count <= 70 { size = 16 }
+        else { size = 12 }
+        return compact ? max(11, size - 4) : size
+    }
+
+    private var isShort: Bool { text.count <= 22 && !text.contains("\n") }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: pointSize, weight: isShort ? .semibold : .medium, design: .rounded))
+            .foregroundStyle(HangTheme.night)
+            .multilineTextAlignment(isShort ? .center : .leading)
+            .lineLimit(compact ? 4 : (isShort ? 3 : 6))
+            .minimumScaleFactor(0.72)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: isShort ? .center : .topLeading)
+            .padding(.leading, compact ? 14 : 22)
+            .padding(.trailing, compact ? 8 : 10)
+            .padding(.vertical, compact ? 6 : 10)
+            .frame(width: compact ? nil : Self.width, height: compact ? nil : Self.height)
+            .background { NotePaper() }
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .shadow(color: HangTheme.amberDeep.opacity(0.25), radius: 0, y: 1)
+    }
+}
+
+/// Ruled paper. The amber margin sits clear of the text.
+private struct NotePaper: View {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            LinearGradient(
+                colors: [HangTheme.paper, HangTheme.paperShade],
+                startPoint: .top,
+                endPoint: .bottom)
+            VStack(spacing: 0) {
+                ForEach(0..<8, id: \.self) { index in
+                    Spacer(minLength: 0)
+                    Rectangle()
+                        .fill(HangTheme.amberDeep.opacity(index == 0 ? 0 : 0.28))
+                        .frame(height: 0.6)
+                }
+            }
+            .padding(.horizontal, 6)
+            Rectangle()
+                .fill(HangTheme.amber.opacity(0.7))
+                .frame(width: 1)
+                .padding(.leading, 14)
+            LinearGradient(
+                colors: [Color.white.opacity(0.28), Color.clear],
+                startPoint: .top,
+                endPoint: .center)
         }
     }
 }

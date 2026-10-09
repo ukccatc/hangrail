@@ -16,10 +16,16 @@ struct Pegged: Identifiable, Equatable {
     var falling = false
     /// Still flying in from where it was captured; the card waits hidden.
     var flying = false
+    /// Pinned cards stay on the rail when a new shot would otherwise push them off.
+    var pinned = false
+    /// When it was hung. Overflow archives the oldest unpinned card.
+    var hungAt = Date()
+    /// Copied text, shown as a note on the rail. Nil for screenshots.
+    var note: String?
 
     static func == (a: Pegged, b: Pegged) -> Bool {
         a.id == b.id && a.falling == b.falling && a.flying == b.flying
-            && a.place == b.place && a.thumb === b.thumb
+            && a.place == b.place && a.thumb === b.thumb && a.pinned == b.pinned
     }
 }
 
@@ -57,8 +63,14 @@ final class Line: ObservableObject {
 
     private let storeKey = "pegged"
     private let placeStoreKey = "peggedPlaces"
+    private let pinStoreKey = "peggedPins"
+    private let hungStoreKey = "peggedHungAt"
+    private let textStoreKey = "peggedText"
+    /// Recognized text for shots still on the rail, keyed by file path.
+    private var texts: [String: String] = [:]
 
     init() {
+        texts = UserDefaults.standard.dictionary(forKey: textStoreKey) as? [String: String] ?? [:]
         restore()
         scheduleGust()
     }
@@ -66,20 +78,66 @@ final class Line: ObservableObject {
     // MARK: Hanging and dropping
 
     @discardableResult
-    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false, place: CGFloat? = nil) -> UUID? {
+    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false, place: CGFloat? = nil, pinned: Bool = false, hungAt: Date = Date()) -> UUID? {
         guard !items.contains(where: { $0.url == url && !$0.falling }),
               let thumb = makeThumbnail(url) else { return nil }
         var item = Pegged(url: url, thumb: thumb, place: place ?? nextPlace())
         item.flying = flying
+        item.pinned = pinned
+        item.hungAt = hungAt
+        item.note = noteText(url)
         items.append(item)
-        // A full line lets the oldest photo fall off the far end.
-        while liveCount > maxItems, let oldest = items.first(where: { !$0.falling }) {
-            drop(oldest.id, quietly: true)
-        }
+        if noteText(url) != nil { rememberNote(url) }
+        makeRoom()
         sortByPlace()
         save()
         if !quietly { play("Tink", volume: 0.35) }
+        if noteText(url) == nil { recognize(url) }
         return item.id
+    }
+
+    /// A full rail archives the oldest unpinned shot. Pins stay, even if that
+    /// leaves more cards than maxItems. If every card is pinned, stop.
+    private func makeRoom() {
+        while liveCount > maxItems {
+            guard let oldest = items.filter({ !$0.falling && !$0.pinned }).min(by: { $0.hungAt < $1.hungAt }) else { break }
+            let text = texts[oldest.url.path] ?? ""
+            Archive.shared.keep(oldest.url, text: text)
+            drop(oldest.id, quietly: true)
+        }
+    }
+
+    func togglePin(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        items[i].pinned.toggle()
+        save()
+        if !items[i].pinned { makeRoom() }
+    }
+
+    func share(_ id: UUID, from view: NSView) {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        let picker = NSSharingServicePicker(items: [item.url as NSURL])
+        picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+    }
+
+    func matching(_ query: String) -> [Pegged] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        return items.filter { !$0.falling && texts[$0.url.path]?.localizedCaseInsensitiveContains(q) == true }
+    }
+
+    private func rememberNote(_ url: URL) {
+        guard let text = noteText(url), !text.isEmpty else { return }
+        texts[url.path] = text
+        UserDefaults.standard.set(texts, forKey: textStoreKey)
+    }
+
+    private func recognize(_ url: URL) {
+        ShotText.recognize(url) { [weak self] text in
+            guard let self, !text.isEmpty else { return }
+            self.texts[url.path] = text
+            UserDefaults.standard.set(self.texts, forKey: self.textStoreKey)
+        }
     }
 
     /// Prefer the centre, then alternate left/right with a gap, staying inside
@@ -190,12 +248,17 @@ final class Line: ObservableObject {
 
     func copy(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
-        let entry = NSPasteboardItem()
-        if let png = pngData(item.url) { entry.setData(png, forType: .png) }
-        entry.setString(item.url.absoluteString, forType: .fileURL)
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.writeObjects([entry])
+        if let text = noteText(item.url) {
+            pb.setString(text, forType: .string)
+        } else {
+            let entry = NSPasteboardItem()
+            if let png = pngData(item.url) { entry.setData(png, forType: .png) }
+            entry.setString(item.url.absoluteString, forType: .fileURL)
+            pb.writeObjects([entry])
+        }
+        ClipboardWatch.shared.ignoreCurrent()
 
         copiedID = id
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
@@ -213,6 +276,7 @@ final class Line: ObservableObject {
     /// is the source app's job, as Finder does.
     func trash(_ id: UUID) {
         guard let item = items.first(where: { $0.id == id }) else { return }
+        Archive.shared.forget(item.url)
         do {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
             log.notice("Trashed \(item.url.lastPathComponent, privacy: .public)")
@@ -304,11 +368,17 @@ final class Line: ObservableObject {
         UserDefaults.standard.set(live.map(\.url.path), forKey: storeKey)
         let places = Dictionary(uniqueKeysWithValues: live.map { ($0.url.path, Double($0.place)) })
         UserDefaults.standard.set(places, forKey: placeStoreKey)
+        let pins = Dictionary(uniqueKeysWithValues: live.map { ($0.url.path, $0.pinned) })
+        UserDefaults.standard.set(pins, forKey: pinStoreKey)
+        let hung = Dictionary(uniqueKeysWithValues: live.map { ($0.url.path, $0.hungAt.timeIntervalSince1970) })
+        UserDefaults.standard.set(hung, forKey: hungStoreKey)
     }
 
     private func restore() {
         let paths = UserDefaults.standard.stringArray(forKey: storeKey) ?? []
         let places = UserDefaults.standard.dictionary(forKey: placeStoreKey) as? [String: Double] ?? [:]
+        let pins = UserDefaults.standard.dictionary(forKey: pinStoreKey) as? [String: Bool] ?? [:]
+        let hung = UserDefaults.standard.dictionary(forKey: hungStoreKey) as? [String: Double] ?? [:]
         let existing = paths.filter { FileManager.default.fileExists(atPath: $0) }
         let count = existing.count
         let start = count <= 1 ? 0.5
@@ -320,7 +390,8 @@ final class Line: ObservableObject {
             } else {
                 seeded = min(1 - Layout.placeInset, start + CGFloat(index) * Layout.placeStep)
             }
-            hang(URL(fileURLWithPath: path), quietly: true, place: seeded)
+            let when = hung[path].map { Date(timeIntervalSince1970: $0) } ?? Date()
+            hang(URL(fileURLWithPath: path), quietly: true, place: seeded, pinned: pins[path] ?? false, hungAt: when)
         }
     }
 
@@ -340,7 +411,13 @@ final class Line: ObservableObject {
     }
 }
 
+func noteText(_ url: URL) -> String? {
+    guard url.pathExtension.lowercased() == "txt" else { return nil }
+    return try? String(contentsOf: url, encoding: .utf8)
+}
+
 func makeThumbnail(_ url: URL, maxPixels: Int = 480) -> NSImage? {
+    if let text = noteText(url) { return noteThumbnail(text) }
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
     let options: [CFString: Any] = [
         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -349,4 +426,67 @@ func makeThumbnail(_ url: URL, maxPixels: Int = 480) -> NSImage? {
     ]
     guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
     return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+}
+
+/// A portrait slip so copied text hangs on the same rail as screenshots.
+/// Short notes use a large face; longer notes shrink until the text fits.
+func noteThumbnail(_ text: String) -> NSImage {
+    let size = NSSize(width: 360, height: 480)
+    let textRect = NSRect(x: 64, y: 28, width: size.width - 84, height: size.height - 52)
+    let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let fontSize = noteFontSize(body, fitting: textRect)
+    let image = NSImage(size: size)
+    image.lockFocusFlipped(true)
+    NSGradient(colors: [
+        NSColor(srgbRed: 242 / 255, green: 226 / 255, blue: 196 / 255, alpha: 1),
+        NSColor(srgbRed: 222 / 255, green: 196 / 255, blue: 156 / 255, alpha: 1),
+    ])?.draw(in: NSRect(origin: .zero, size: size), angle: -90)
+    let rule = NSColor(srgbRed: 196 / 255, green: 118 / 255, blue: 42 / 255, alpha: 0.28)
+    rule.setFill()
+    for row in 1..<8 {
+        let y = 36 + CGFloat(row) * 52
+        NSBezierPath(rect: NSRect(x: 18, y: y, width: size.width - 36, height: 1)).fill()
+    }
+    NSColor(srgbRed: 232 / 255, green: 165 / 255, blue: 75 / 255, alpha: 0.7).setFill()
+    NSBezierPath(rect: NSRect(x: 48, y: 0, width: 2, height: size.height)).fill()
+    let style = NSMutableParagraphStyle()
+    style.lineBreakMode = .byWordWrapping
+    let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: fontSize, weight: fontSize > 40 ? .semibold : .medium),
+        .foregroundColor: NSColor(srgbRed: 13 / 255, green: 21 / 255, blue: 32 / 255, alpha: 1),
+        .paragraphStyle: style,
+    ]
+    (body as NSString).draw(
+        with: textRect,
+        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+        attributes: attrs)
+    image.unlockFocus()
+    return image
+}
+
+/// Largest size whose wrapped height still sits inside `rect`.
+private func noteFontSize(_ text: String, fitting rect: NSRect) -> CGFloat {
+    let sample = text.isEmpty ? " " : text
+    var low: CGFloat = 18
+    var high: CGFloat = 92
+    var best = low
+    while high - low > 1 {
+        let mid = (low + high) / 2
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        let bounds = (sample as NSString).boundingRect(
+            with: NSSize(width: rect.width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [
+                .font: NSFont.systemFont(ofSize: mid, weight: mid > 40 ? .semibold : .medium),
+                .paragraphStyle: style,
+            ])
+        if bounds.height <= rect.height {
+            best = mid
+            low = mid
+        } else {
+            high = mid
+        }
+    }
+    return best
 }
