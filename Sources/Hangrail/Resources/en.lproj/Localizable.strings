@@ -30,7 +30,7 @@
 "Move to Trash" = "Move to Trash";
 
 /* LineView */
-"Take a screenshot and it will hang here" = "Take a screenshot and it will hang here";
+"Take a screenshot or drag one here" = "Take a screenshot or drag one here";
 
 /* PeggedView */
 "Copied" = "Copied";

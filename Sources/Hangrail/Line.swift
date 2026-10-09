@@ -9,6 +9,8 @@ struct Pegged: Identifiable, Equatable {
     let id = UUID()
     let url: URL
     var thumb: NSImage
+    /// Where it hangs on the rail, 0 = left margin, 1 = right margin.
+    var place: CGFloat
     /// Every photo hangs a little crooked, like on a real line.
     let tilt = Double.random(in: -2.5...2.5)
     var falling = false
@@ -16,7 +18,8 @@ struct Pegged: Identifiable, Equatable {
     var flying = false
 
     static func == (a: Pegged, b: Pegged) -> Bool {
-        a.id == b.id && a.falling == b.falling && a.flying == b.flying && a.thumb === b.thumb
+        a.id == b.id && a.falling == b.falling && a.flying == b.flying
+            && a.place == b.place && a.thumb === b.thumb
     }
 }
 
@@ -29,8 +32,14 @@ final class Line: ObservableObject {
     @Published var copiedID: UUID?
     @Published var draggingID: UUID?
     @Published var pressedID: UUID?
+    /// The photo being slid along the rail.
+    @Published var reorderID: UUID?
+    /// Its place when the slide started, so motion follows the finger.
+    private var slideStartPlace: CGFloat = 0
     /// Whether the line has slid down into view.
     @Published var revealed = false
+    /// An image file is hovering the rail and can be hung.
+    @Published var receivingDrop = false
 
     /// Card frames in window coordinates, reported by the views. The panel
     /// uses them to only catch clicks over photos and let the rest through.
@@ -47,6 +56,7 @@ final class Line: ObservableObject {
     var liveCount: Int { items.filter { !$0.falling }.count }
 
     private let storeKey = "pegged"
+    private let placeStoreKey = "peggedPlaces"
 
     init() {
         restore()
@@ -56,19 +66,50 @@ final class Line: ObservableObject {
     // MARK: Hanging and dropping
 
     @discardableResult
-    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false) -> UUID? {
+    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false, place: CGFloat? = nil) -> UUID? {
         guard !items.contains(where: { $0.url == url && !$0.falling }),
               let thumb = makeThumbnail(url) else { return nil }
-        var item = Pegged(url: url, thumb: thumb)
+        var item = Pegged(url: url, thumb: thumb, place: place ?? nextPlace())
         item.flying = flying
         items.append(item)
         // A full line lets the oldest photo fall off the far end.
         while liveCount > maxItems, let oldest = items.first(where: { !$0.falling }) {
             drop(oldest.id, quietly: true)
         }
+        sortByPlace()
         save()
         if !quietly { play("Tink", volume: 0.35) }
         return item.id
+    }
+
+    /// Prefer the centre, then alternate left/right with a gap, staying inside
+    /// the side insets. Manual placements are left alone.
+    private func nextPlace() -> CGFloat {
+        let live = items.filter { !$0.falling }
+        let inset = Layout.placeInset
+        let step = Layout.placeStep
+        guard !live.isEmpty else { return 0.5 }
+        let taken = live.map(\.place)
+        var candidates: [CGFloat] = [0.5]
+        for n in 1...max(maxItems, 8) {
+            let d = CGFloat(n) * step
+            candidates.append(0.5 + d)
+            candidates.append(0.5 - d)
+        }
+        for raw in candidates {
+            let place = min(1 - inset, max(inset, raw))
+            if taken.allSatisfy({ abs($0 - place) >= step * 0.85 }) {
+                return place
+            }
+        }
+        return min(1 - inset, (taken.max() ?? 0.5) + step)
+    }
+
+    private func sortByPlace() {
+        items.sort { a, b in
+            if a.falling != b.falling { return !a.falling && b.falling }
+            return a.place < b.place
+        }
     }
 
     /// The capture has reached the line: the real card takes over.
@@ -107,6 +148,42 @@ final class Line: ObservableObject {
         for item in items where !item.falling && !FileManager.default.fileExists(atPath: item.url.path) {
             drop(item.id, quietly: true)
         }
+    }
+
+    // MARK: Arranging
+
+    /// Follow the pointer along the rail. Any place between the left and
+    /// right margins is valid; cards are not snapped to slots.
+    func slide(_ id: UUID, translationX: CGFloat, panelWidth: CGFloat) {
+        guard panelWidth > 1, let from = items.firstIndex(where: { $0.id == id }),
+              !items[from].falling else { return }
+        if reorderID != id {
+            reorderID = id
+            slideStartPlace = items[from].place
+        }
+        let place = min(1, max(0, slideStartPlace + translationX / Layout.usableWidth(panelWidth)))
+        guard items[from].place != place else { return }
+        items[from].place = place
+    }
+
+    func endSlide() {
+        if reorderID != nil {
+            sortByPlace()
+            save()
+        }
+        clearSlide()
+    }
+
+    func cancelSlide() {
+        if let id = reorderID, let i = items.firstIndex(where: { $0.id == id }) {
+            items[i].place = slideStartPlace
+        }
+        clearSlide()
+    }
+
+    private func clearSlide() {
+        reorderID = nil
+        slideStartPlace = 0
     }
 
     // MARK: Actions on one photo
@@ -215,7 +292,7 @@ final class Line: ObservableObject {
     private func scheduleGust() {
         DispatchQueue.main.asyncAfter(deadline: .now() + .random(in: 7...16)) { [weak self] in
             guard let self else { return }
-            if !self.items.isEmpty && self.draggingID == nil { self.gust += 1 }
+            if !self.items.isEmpty && self.draggingID == nil && self.reorderID == nil { self.gust += 1 }
             self.scheduleGust()
         }
     }
@@ -223,14 +300,27 @@ final class Line: ObservableObject {
     // MARK: Persistence
 
     private func save() {
-        let paths = items.filter { !$0.falling }.map(\.url.path)
-        UserDefaults.standard.set(paths, forKey: storeKey)
+        let live = items.filter { !$0.falling }
+        UserDefaults.standard.set(live.map(\.url.path), forKey: storeKey)
+        let places = Dictionary(uniqueKeysWithValues: live.map { ($0.url.path, Double($0.place)) })
+        UserDefaults.standard.set(places, forKey: placeStoreKey)
     }
 
     private func restore() {
         let paths = UserDefaults.standard.stringArray(forKey: storeKey) ?? []
-        for path in paths where FileManager.default.fileExists(atPath: path) {
-            hang(URL(fileURLWithPath: path), quietly: true)
+        let places = UserDefaults.standard.dictionary(forKey: placeStoreKey) as? [String: Double] ?? [:]
+        let existing = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        let count = existing.count
+        let start = count <= 1 ? 0.5
+            : max(Layout.placeInset, 0.5 - CGFloat(count - 1) * Layout.placeStep / 2)
+        for (index, path) in existing.enumerated() {
+            let seeded: CGFloat
+            if let saved = places[path] {
+                seeded = CGFloat(saved)
+            } else {
+                seeded = min(1 - Layout.placeInset, start + CGFloat(index) * Layout.placeStep)
+            }
+            hang(URL(fileURLWithPath: path), quietly: true, place: seeded)
         }
     }
 

@@ -28,7 +28,7 @@
 "Move to Trash" = "移到废纸篓";
 
 /* LineView */
-"Take a screenshot and it will hang here" = "截个图，它就会挂在这里";
+"Take a screenshot or drag one here" = "截个图，或把图片拖到这里";
 
 /* PeggedView */
 "Copied" = "已复制";

@@ -12,6 +12,7 @@ struct PeggedView: View {
 
     private var copied: Bool { line.copiedID == item.id }
     private var dragging: Bool { line.draggingID == item.id }
+    private var reordering: Bool { line.reorderID == item.id }
     private var pressed: Bool { line.pressedID == item.id }
 
     var body: some View {
@@ -67,7 +68,9 @@ struct PeggedView: View {
             )
             .padding(Frame.inset)
             .glassFrame(cornerRadius: Frame.radius)
-            .shadow(color: .black.opacity(hovering ? 0.26 : 0.18), radius: hovering ? 14 : 10, y: hovering ? 8 : 5)
+            .shadow(color: .black.opacity(reordering ? 0.40 : (hovering ? 0.28 : 0.28)),
+                    radius: reordering ? 18 : (hovering ? 12 : 8),
+                    y: reordering ? 12 : (hovering ? 7 : 6))
             // Holding presses the photo in slowly, so a long press feels like
             // it is building up to something.
             .scaleEffect(pressed ? 0.95 : (hovering ? 1.035 : 1), anchor: .top)
@@ -156,44 +159,57 @@ extension View {
         return background(.ultraThinMaterial, in: shape)
             .overlay(
                 shape.stroke(
-                    LinearGradient(colors: [Color.white.opacity(0.55), Color.white.opacity(0.12)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 0.75)
+                    LinearGradient(
+                        colors: [HangTheme.cyanGlow.opacity(0.45), Color.white.opacity(0.12), HangTheme.amber.opacity(0.25)],
+                        startPoint: .top,
+                        endPoint: .bottom),
+                    lineWidth: 0.9)
             )
-            .overlay(shape.stroke(Color.black.opacity(0.10), lineWidth: 0.5).padding(-0.5))
+            .overlay(shape.stroke(HangTheme.night.opacity(0.35), lineWidth: 1).padding(-0.5))
     }
 }
 
-/// A minimal aluminium clip: a brushed metal pill with a slot where it
-/// grips the line, and a soft shadow so it reads on any background.
+/// Gunmetal clip with an amber bite — Blade Runner 2049 hardware on the ribbon.
 struct Clothespin: View {
     private let metal = LinearGradient(
         stops: [
-            .init(color: Color(white: 0.70), location: 0),
-            .init(color: Color(white: 0.93), location: 0.35),
-            .init(color: Color(white: 0.82), location: 0.65),
-            .init(color: Color(white: 0.62), location: 1),
+            .init(color: HangTheme.mist, location: 0),
+            .init(color: Color(white: 0.88), location: 0.4),
+            .init(color: HangTheme.slate, location: 1),
         ],
-        startPoint: .leading, endPoint: .trailing)
+        startPoint: .top, endPoint: .bottom)
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-            .fill(metal)
-            .frame(width: 9, height: 26)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                    .stroke(LinearGradient(colors: [Color.white.opacity(0.9), Color.black.opacity(0.18)],
-                                           startPoint: .top, endPoint: .bottom),
-                            lineWidth: 0.6)
-            )
-            .overlay(alignment: .top) {
-                // The slot the line passes through.
-                Capsule()
-                    .fill(Color.black.opacity(0.32))
-                    .frame(width: 5, height: 1.4)
-                    .padding(.top, 8.5)
-            }
-            .shadow(color: .black.opacity(0.30), radius: 2, y: 1.5)
-            .allowsHitTesting(false)
+        ZStack {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(HangTheme.night)
+                .frame(width: 18, height: 22)
+                .offset(y: 2)
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(metal)
+                .frame(width: 16, height: 26)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: [HangTheme.cyanGlow.opacity(0.5), HangTheme.amber.opacity(0.35)],
+                                startPoint: .top, endPoint: .bottom),
+                            lineWidth: 0.7)
+                )
+                .overlay(alignment: .top) {
+                    Capsule()
+                        .fill(HangTheme.amberDeep.opacity(0.95))
+                        .frame(width: 11, height: 5)
+                        .padding(.top, 7)
+                }
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(HangTheme.cyan.opacity(0.35))
+                        .frame(width: 8, height: 2)
+                        .padding(.bottom, 5)
+                }
+        }
+        .shadow(color: HangTheme.night.opacity(0.55), radius: 3, y: 2)
+        .allowsHitTesting(false)
     }
 }

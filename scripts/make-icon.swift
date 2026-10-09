@@ -37,8 +37,9 @@ ctx.restoreGState()
 
 ctx.saveGState()
 shape.addClip()
-NSGradient(colors: [color(64, 168, 160), color(90, 140, 180), color(232, 168, 96)],
-           atLocations: [0, 0.55, 1], colorSpace: .sRGB)!
+// Blade Runner 2049: night slate → cyan haze → amber sun.
+NSGradient(colors: [color(13, 21, 32), color(91, 196, 196), color(232, 165, 75)],
+           atLocations: [0, 0.5, 1], colorSpace: .sRGB)!
     .draw(in: body, angle: -60)
 // Soft light from the top.
 NSGradient(colors: [color(255, 255, 255, 0.35), color(255, 255, 255, 0)])!
@@ -62,15 +63,20 @@ func linePath() -> NSBezierPath {
 ctx.saveGState()
 shadow(0.25, blur: 8, y: -5)
 let line = linePath()
-line.lineWidth = 9
-color(110, 116, 140).setStroke()
+line.lineWidth = 14
+color(27, 40, 56).setStroke()
 line.stroke()
 ctx.restoreGState()
 let highlight = linePath()
-highlight.lineWidth = 3
+highlight.lineWidth = 4
 highlight.transform(using: AffineTransform(translationByX: 0, byY: 2))
-color(255, 255, 255, 0.55).setStroke()
+color(91, 196, 196, 0.55).setStroke()
 highlight.stroke()
+let stitch = linePath()
+stitch.lineWidth = 2
+stitch.setLineDash([4, 5], count: 2, phase: 0)
+color(232, 165, 75, 0.85).setStroke()
+stitch.stroke()
 
 // A screenshot in a glass frame, hanging from a clip.
 func hang(centerX: CGFloat, width: CGFloat, height: CGFloat, angle: CGFloat, content: (NSRect) -> Void) {

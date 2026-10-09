@@ -32,6 +32,9 @@ struct GrabArea: NSViewRepresentable {
         view.onClick = { line.copy(id) }
         view.onDoubleClick = { line.open(id) }
         view.onDragStart = { line.draggingID = id }
+        view.onSlide = { dx, width in line.slide(id, translationX: dx, panelWidth: width) }
+        view.onSlideEnd = { line.endSlide() }
+        view.onSlideCancel = { line.cancelSlide() }
         view.onDragEnd = {
             line.draggingID = nil
             // Moved into a folder: it is saved where you wanted it.
@@ -65,6 +68,9 @@ struct GrabArea: NSViewRepresentable {
 
 final class GrabView: NSView, NSDraggingSource {
     static var isDragging = false
+    /// True while a card is being slid along the rail. The mouse timer must
+    /// not commit or cancel that slide; mouseUp does.
+    static var isSliding = false
 
     var url: URL?
     var dragImage: NSImage?
@@ -72,6 +78,9 @@ final class GrabView: NSView, NSDraggingSource {
     var onDoubleClick: () -> Void = {}
     var onDragStart: () -> Void = {}
     var onDragEnd: () -> Void = {}
+    var onSlide: (CGFloat, CGFloat) -> Void = { _, _ in }
+    var onSlideEnd: () -> Void = {}
+    var onSlideCancel: () -> Void = {}
     var onTrash: () -> Void = {}
     var onDiscard: () -> Void = {}
     var onLongPress: () -> Void = {}
@@ -80,8 +89,17 @@ final class GrabView: NSView, NSDraggingSource {
 
     private var downPoint: NSPoint?
     private var startedDrag = false
+    private var sliding = false
+    /// The pointer left the click. A drag must not also count as a click or
+    /// as the press-and-hold that opens Markup.
+    private var moved = false
     private var holdTimer: Timer?
     private var didLongPress = false
+    /// Bumped on press and on release so a timer that fires late does nothing.
+    private var pressToken = 0
+    /// Global monitors keep a slide alive if the view stops receiving events
+    /// while SwiftUI moves the card under the pointer.
+    private var slideMonitors: [Any] = []
 
     /// How long you hold before Markup opens. Long enough not to fire on a
     /// slow click, short enough to feel deliberate.
@@ -113,17 +131,26 @@ final class GrabView: NSView, NSDraggingSource {
         }
         downPoint = event.locationInWindow
         startedDrag = false
+        sliding = false
+        moved = false
         didLongPress = false
+        pressToken += 1
+        let token = pressToken
         onPressChange(true)
         holdTimer?.invalidate()
-        holdTimer = Timer.scheduledTimer(withTimeInterval: Self.holdDuration, repeats: false) { [weak self] _ in
+        // .common so a still hold fires while the mouse is down. A drag
+        // invalidates it; the token covers a timer that was already queued.
+        let timer = Timer(timeInterval: Self.holdDuration, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.downPoint != nil, !self.startedDrag else { return }
+                guard let self, token == self.pressToken, !self.moved, !self.sliding,
+                      !self.startedDrag, self.downPoint != nil else { return }
                 self.didLongPress = true
                 self.onPressChange(false)
                 self.onLongPress()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        holdTimer = timer
     }
 
     private func endPress() {
@@ -135,24 +162,98 @@ final class GrabView: NSView, NSDraggingSource {
     override func mouseDragged(with event: NSEvent) {
         guard let start = downPoint, !startedDrag, let url else { return }
         let p = event.locationInWindow
-        guard hypot(p.x - start.x, p.y - start.y) > 4, !didLongPress else { return }
-        startedDrag = true
+        let dx = p.x - start.x
+        let dy = p.y - start.y
+        guard hypot(dx, dy) > 4, !didLongPress else { return }
+        moved = true
         endPress()
-
-        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-        item.setDraggingFrame(imageFrame(), contents: dragImage)
-        let session = beginDraggingSession(with: [item], event: event, source: self)
-        // Released where nothing accepts it: it flies back to the line.
-        session.animatesToStartingPositionsOnCancelOrFail = true
-        GrabView.isDragging = true
-        onDragStart()
+        // A sideways move rearranges, even if the cursor dips below the
+        // short panel. Only a deliberate pull downward leaves the rail.
+        let below = window.map { $0.convertPoint(toScreen: p).y < $0.frame.minY - 28 } ?? false
+        let pulledOff = below && dy < -48 && abs(dy) > abs(dx) * 1.15
+        if pulledOff {
+            if sliding {
+                sliding = false
+                GrabView.isSliding = false
+                onSlideCancel()
+            }
+            startedDrag = true
+            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            item.setDraggingFrame(imageFrame(), contents: dragImage)
+            let session = beginDraggingSession(with: [item], event: event, source: self)
+            // Released where nothing accepts it: it flies back to the line.
+            session.animatesToStartingPositionsOnCancelOrFail = true
+            GrabView.isDragging = true
+            onDragStart()
+            return
+        }
+        if !sliding {
+            sliding = true
+            GrabView.isSliding = true
+            startSlideTracking()
+        }
+        onSlide(dx, window?.frame.width ?? bounds.width)
     }
 
     override func mouseUp(with event: NSEvent) {
+        finishPointer(clickCount: event.clickCount)
+    }
+
+    private func startSlideTracking() {
+        stopSlideTracking()
+        let dragged: (NSEvent) -> Void = { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, self.sliding, let start = self.downPoint else { return }
+                // Global monitors report screen coordinates; local ones are
+                // window-relative. Always measure against the window.
+                let x: CGFloat
+                if let window = self.window {
+                    x = window.convertPoint(fromScreen: NSEvent.mouseLocation).x
+                } else {
+                    x = event.locationInWindow.x
+                }
+                self.onSlide(x - start.x, self.window?.frame.width ?? self.bounds.width)
+            }
+        }
+        let released: (NSEvent) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishPointer(clickCount: 1) }
+        }
+        if let localDrag = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDragged, handler: { e in dragged(e); return e }) {
+            slideMonitors.append(localDrag)
+        }
+        if let globalDrag = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged, handler: dragged) {
+            slideMonitors.append(globalDrag)
+        }
+        if let localUp = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { e in released(e); return e }) {
+            slideMonitors.append(localUp)
+        }
+        if let globalUp = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: released) {
+            slideMonitors.append(globalUp)
+        }
+    }
+
+    private func stopSlideTracking() {
+        for monitor in slideMonitors { NSEvent.removeMonitor(monitor) }
+        slideMonitors.removeAll()
+    }
+
+    private func finishPointer(clickCount: Int) {
+        guard downPoint != nil || sliding || startedDrag || moved else { return }
+        let dragged = moved || sliding || startedDrag
+        pressToken += 1
         endPress()
-        if downPoint != nil && !startedDrag && !didLongPress && event.clickCount == 1 { onClick() }
+        stopSlideTracking()
+        if sliding {
+            sliding = false
+            GrabView.isSliding = false
+            onSlideEnd()
+        }
+        // A drag is not a click. Click copies; double-click opens in Preview.
+        if !dragged && downPoint != nil && !didLongPress && clickCount == 1 { onClick() }
         downPoint = nil
+        moved = false
         didLongPress = false
+        startedDrag = false
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -170,7 +271,10 @@ final class GrabView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         GrabView.isDragging = false
+        GrabView.isSliding = false
+        stopSlideTracking()
         startedDrag = false
+        sliding = false
         downPoint = nil
         log.notice("Drag ended with operation \(operation.rawValue, privacy: .public)")
         // Dropped on the Trash: macOS only tells us, we move the file.

@@ -28,7 +28,7 @@
 "Move to Trash" = "Mover a la Papelera";
 
 /* LineView */
-"Take a screenshot and it will hang here" = "Haz una captura y se quedará colgada aquí";
+"Take a screenshot or drag one here" = "Haz una captura o arrastra una aquí";
 
 /* PeggedView */
 "Copied" = "Copiado";

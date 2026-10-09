@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.itemsChanged() }
             .store(in: &cancellables)
+        startMouseTracking()
 
         // Entering or leaving full screen switches Space. Check again once the
         // switch animation has settled.
@@ -239,12 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Where a card will hang, in screen coordinates, using the same layout
     /// as the line view.
     private func cardFrame(for id: UUID) -> CGRect? {
-        guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
+        guard let item = line.items.first(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: line.items.count, width: width)
+        let x = Layout.x(place: item.place, width: width)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
-        let size = PeggedView.cardSize(for: line.items[index].thumb.size)
+        let size = PeggedView.cardSize(for: item.thumb.size)
         return CGRect(x: panel.frame.minX + x - size.width / 2,
                       y: panel.frame.maxY - cardTop - size.height,
                       width: size.width, height: size.height)
@@ -260,9 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             dismiss()
         }
-        // The cursor is watched while there is a line, even tucked away,
-        // to notice it pushing against the top edge.
-        if wanted { startMouseTracking() } else { stopMouseTracking() }
+        // Always watched, including while the line is empty and tucked, so a
+        // file dragged to the top edge can bring the rail down.
+        startMouseTracking()
     }
 
     private func present() {
@@ -371,16 +372,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     /// How long the cursor is away before the line tucks back up.
     private static let retractDelay: TimeInterval = 0.5
+    /// The rail was brought down only so a file could be dropped on it.
+    private var holdingForDrop = false
+
+    /// A drag of image files from Finder or the Desktop, not one that
+    /// started on a photo already on the rail. The drag pasteboard keeps
+    /// its last contents after the drag, so a pressed button is required.
+    private var incomingImageDrag: Bool {
+        guard !GrabView.isDragging, NSEvent.pressedMouseButtons != 0 else { return false }
+        return ImageDrop.dragPasteboardHasImages()
+    }
 
     private func tick() {
         let mouse = NSEvent.mouseLocation
         let now = Date()
+        // A missed mouse-up used to leave these set, and the rail then
+        // treated itself as busy and never tucked away.
+        if NSEvent.pressedMouseButtons == 0 && !GrabView.isSliding {
+            if line.pressedID != nil { line.pressedID = nil }
+            if line.receivingDrop { line.receivingDrop = false }
+            holdingForDrop = false
+        }
+        let incoming = incomingImageDrag
 
         let screenUnderPointer = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
         let inMenuBar = screenUnderPointer.map { NSMouseInRect(mouse, Self.menuBarBand(of: $0), false) } ?? false
         if !inMenuBar { menuBarSuppressed = false }
 
+        if !incoming && holdingForDrop {
+            holdingForDrop = false
+            line.receivingDrop = false
+            if line.liveCount == 0 && !pinned && !keepOpen {
+                wanted = false
+                refresh()
+            }
+        }
+
         guard isRevealed else {
+            // An image dragged into the menu bar brings the rail down at once,
+            // so the drop can land on it. A resting pointer still waits.
+            if incoming, let screen = screenUnderPointer, inMenuBar, !menuBarSuppressed,
+               !FullScreen.isActive(on: screen) {
+                holdingForDrop = true
+                wanted = true
+                hotZoneSince = nil
+                if panel.screen != screen {
+                    panel.placeOnScreen(screen)
+                    updateCapacity()
+                }
+                refresh()
+                reveal()
+                panel.ignoresMouseEvents = false
+                return
+            }
             // Resting in the menu bar brings the line down on that screen.
             // Pushing against the top edge is part of it, and it also works
             // when another display sits above and the pointer never stops.
@@ -403,16 +447,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        updateMousePassThrough(mouse)
+        updateMousePassThrough(mouse, incoming: incoming)
 
         // The line's zone runs from its lowest point up to the top of the
         // screen, menu bar included, so moving up never hides it.
         var zone = panel.frame
         if let screen = panel.screen { zone.size.height = screen.frame.maxY - zone.minY }
         let inside = NSMouseInRect(mouse, zone, false)
-        if inside && pinned { pinned = false }
+        if inside { pinned = false }
 
-        let busy = pinned || GrabView.isDragging || line.pressedID != nil || now < peekUntil
+        let busy = pinned || GrabView.isDragging || incoming || holdingForDrop
+            || line.receivingDrop || line.reorderID != nil || line.pressedID != nil || now < peekUntil
         if inside || busy {
             awaySince = nil
         } else {
@@ -427,8 +472,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The panel spans the whole width of the screen, so it only accepts the
     /// mouse while the cursor is over a photo. Everywhere else, clicks go to
-    /// whatever is underneath.
-    private func updateMousePassThrough(_ mouse: NSPoint) {
+    /// whatever is underneath. An incoming image drag is the exception: the
+    /// whole strip has to receive the drop, including the gaps between photos.
+    private func updateMousePassThrough(_ mouse: NSPoint, incoming: Bool) {
+        if incoming || line.reorderID != nil || GrabView.isSliding {
+            if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
+            return
+        }
         guard !GrabView.isDragging else { return }
         let local = panel.convertPoint(fromScreen: mouse)
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
