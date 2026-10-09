@@ -1,4 +1,4 @@
-// Draws the Tendedero app icon: two screenshots in crisp glass frames,
+// Draws the Hangrail app icon: two screenshots in crisp glass frames,
 // held by aluminium clips on a thin line, over a soft gradient.
 // Usage: swift scripts/make-icon.swift out.png
 import AppKit
@@ -37,7 +37,7 @@ ctx.restoreGState()
 
 ctx.saveGState()
 shape.addClip()
-NSGradient(colors: [color(132, 170, 255), color(176, 160, 250), color(255, 190, 196)],
+NSGradient(colors: [color(64, 168, 160), color(90, 140, 180), color(232, 168, 96)],
            atLocations: [0, 0.55, 1], colorSpace: .sRGB)!
     .draw(in: body, angle: -60)
 // Soft light from the top.
